@@ -1,4 +1,5 @@
 use anyhow::{anyhow, Result};
+use clap::Parser;
 use log::{error, info, warn};
 use solana_sdk::signature::{read_keypair_file, Signer};
 use std::str::FromStr;
@@ -16,13 +17,29 @@ use liquidation::{calculate_refreshed_obligation, liquidate_and_redeem};
 use rpc::SolendRpcClient;
 use wallet::get_wallet_token_balance;
 
+/// Solend Liquidator Bot - Rust Edition
+#[derive(Parser, Debug)]
+#[command(author, version, about, long_about = None)]
+struct Args {
+    /// Run in dry-run mode (no transactions will be submitted)
+    #[arg(long)]
+    dry_run: bool,
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
+    // Parse CLI arguments
+    let args = Args::parse();
+    
     // Initialize logger
     env_logger::Builder::from_env(env_logger::Env::default().default_filter_or("info"))
         .init();
     
     info!("Starting Solend Liquidator Bot (Rust)");
+    
+    if args.dry_run {
+        warn!("⚠️  DRY-RUN MODE ENABLED - No transactions will be submitted ⚠️");
+    }
     
     // Load configuration
     let config = Config::from_env()?;
@@ -195,6 +212,7 @@ async fn main() -> Result<()> {
                         &selected_deposit.symbol,
                         market,
                         &obligation,
+                        args.dry_run,
                     ).await {
                         Ok(_) => {
                             info!("Successfully liquidated obligation {}", obligation_pubkey);
@@ -221,8 +239,35 @@ async fn main() -> Result<()> {
                 }
             }
             
-            // TODO: Implement token unwrapping
-            // TODO: Implement wallet rebalancing if config.targets is not empty
+            // Unwrap wrapped tokens
+            if let Err(e) = wallet::unwrap_all_wrapped_tokens(rpc_client.client(), &payer).await {
+                warn!("Failed to unwrap tokens: {}", e);
+            }
+            
+            // Rebalance wallet if targets configured
+            if !config.targets.is_empty() {
+                // Build token mints map from market reserves
+                let mut token_mints = std::collections::HashMap::new();
+                for reserve in &market.reserves {
+                    if let Ok(mint) = solana_sdk::pubkey::Pubkey::from_str(&reserve.liquidity_token.mint) {
+                        token_mints.insert(
+                            reserve.liquidity_token.symbol.clone(),
+                            (mint, reserve.decimals()),
+                        );
+                    }
+                }
+                
+                if let Err(e) = wallet::rebalance_wallet(
+                    rpc_client.client(),
+                    &payer,
+                    &config.app,
+                    &config.targets,
+                    config.rebalance_padding,
+                    &token_mints,
+                ).await {
+                    warn!("Failed to rebalance wallet: {}", e);
+                }
+            }
             
             // Throttle to avoid rate limiting
             if config.throttle_ms > 0 {

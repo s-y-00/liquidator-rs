@@ -1,5 +1,6 @@
 pub mod pyth;
 pub mod switchboard;
+pub mod validation;
 
 use anyhow::Result;
 use std::collections::HashMap;

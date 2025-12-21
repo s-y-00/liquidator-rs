@@ -27,6 +27,7 @@ pub async fn liquidate_and_redeem(
     withdraw_token_symbol: &str,
     market: &MarketConfig,
     obligation: &Obligation,
+    dry_run: bool,
 ) -> Result<()> {
     let mut instructions = vec![];
     
@@ -144,14 +145,25 @@ pub async fn liquidate_and_redeem(
     let mut transaction = Transaction::new_with_payer(&instructions, Some(&payer.pubkey()));
     transaction.sign(&[payer], recent_blockhash);
     
-    let signature = client.send_and_confirm_transaction(&transaction)?;
-    
-    log::info!(
-        "Liquidation successful! Signature: {} for repay: {} withdraw: {}",
-        signature,
-        repay_token_symbol,
-        withdraw_token_symbol
-    );
+    if dry_run {
+        log::info!(
+            "🔍 DRY-RUN: Would liquidate {} (repay: {}, withdraw: {}) with {} instructions",
+            obligation.lending_market,
+            repay_token_symbol,
+            withdraw_token_symbol,
+            instructions.len()
+        );
+        log::info!("🔍 DRY-RUN: Transaction not submitted (dry-run mode)");
+    } else {
+        let signature = client.send_and_confirm_transaction(&transaction)?;
+        
+        log::info!(
+            "Liquidation successful! Signature: {} for repay: {} withdraw: {}",
+            signature,
+            repay_token_symbol,
+            withdraw_token_symbol
+        );
+    }
     
     Ok(())
 }

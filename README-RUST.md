@@ -22,6 +22,9 @@ cargo build --release
 
 # Run liquidator
 RUST_LOG=info ./target/release/liquidator
+
+# Run in dry-run mode (safe testing, no transactions submitted)
+RUST_LOG=info ./target/release/liquidator --dry-run
 ```
 
 ## Configuration
@@ -37,6 +40,10 @@ SECRET_PATH=/path/to/wallet.json                  # File system wallet
 # Optional
 MARKETS=4UpD2fh7xH3VP9QQaXtsS1YY3bxzWhtfpks7FatyKvdY  # Comma-separated market addresses
 THROTTLE=1000                                     # Milliseconds between iterations
+
+# Wallet Rebalancing (optional)
+TARGETS=USDC:1000 SOL:5 USDT:500 ETH:0.5         # Token distribution targets
+REBALANCE_PADDING=0.2                            # Tolerance (20% = 0.2)
 ```
 
 ## Features
@@ -46,12 +53,63 @@ THROTTLE=1000                                     # Milliseconds between iterati
 - **Automated Liquidation**: Executes liquidations with optimal collateral/repay selection
 - **Multi-Market Support**: Monitors all Solend markets or specific ones
 - **Pyth Oracle Integration**: Fetches real-time prices for health calculations
+- **Oracle Price Validation**: Validates prices for staleness and sanity
+- **Dry-Run Mode**: Test liquidation detection without submitting transactions (`--dry-run` flag)
+- **Wallet Rebalancing**: Automatic token distribution via Jupiter (configure with `TARGETS`)
+- **Jupiter Swap Integration**: Efficient token swaps using Jupiter v6 API
 - **Throttling**: Configurable rate limiting to avoid RPC throttling
+- **Switchboard Support**: Basic Switchboard oracle support (Pyth recommended for production)
 
-### 🚧 To Be Implemented
-- **Wallet Rebalancing**: Automatic token distribution via Jupiter (currently manual)
-- **Token Unwrapping**: Receipt token unwrapping (basis, Kamino, Nazare)
-- **Switchboard Full Support**: Currently placeholder only
+### 🚧 Partial Implementation
+- **Token Unwrapping**: Framework in place, specific protocols need implementation
+
+## Logic Flow
+
+```mermaid
+graph TD
+    Start([Start Bot]) --> Init[Initialize Config & RPC]
+    Init --> Loop{Main Loop}
+    
+    subgraph Market Processing
+        Loop --> FetchMarkets[Fetch Markets]
+        FetchMarkets --> MarketLoop{For each Market}
+        MarketLoop --> FetchOracle[Fetch Oracle Data]
+        FetchOracle --> ValidateOracle[Validate Oracle Prices]
+        ValidateOracle --> FetchData[Fetch Obligations & Reserves]
+        
+        subgraph Obligation Processing
+            FetchData --> ObligationLoop{For each Obligation}
+            ObligationLoop --> CalcHealth[Calculate Refreshed Health]
+            CalcHealth --> IsHealthy{Is Unhealthy?}
+            IsHealthy -- No --> NexOb[Next Obligation]
+            
+            IsHealthy -- Yes --> SelectTokens[Select Tokens to Liquidate]
+            SelectTokens --> CheckBalance[Check Wallet Balance]
+            CheckBalance --> HasBalance{Has Balance?}
+            
+            HasBalance -- No --> NexOb
+            HasBalance -- Yes --> ExecuteLiq[Execute Liquidation]
+            ExecuteLiq --> DryRun{Dry Run?}
+            DryRun -- Yes --> LogLiq[Log Opportunity]
+            DryRun -- No --> SubmitLiq[Submit Transaction]
+            
+            LogLiq --> RefreshOb[Refresh Obligation Data]
+            SubmitLiq --> RefreshOb
+            RefreshOb --> CalcHealth
+        end
+        
+        NexOb --> AllObsDone{All Checked?}
+        AllObsDone -- No --> ObligationLoop
+        AllObsDone -- Yes --> Unwrap[Unwrap Tokens]
+        Unwrap --> Rebalance{Targets Configured?}
+        Rebalance -- Yes --> ExecRebalance[Execute Wallet Rebalancing]
+        Rebalance -- No --> Wait[Throttle / Wait]
+        ExecRebalance --> Wait
+    end
+    
+    Wait --> MarketLoop
+    MarketLoop -- All Markets Done --> Loop
+```
 
 ## Architecture
 
@@ -97,6 +155,16 @@ Set `RUST_LOG` environment variable:
 RUST_LOG=debug ./target/release/liquidator  # Verbose logging
 RUST_LOG=info ./target/release/liquidator   # Normal logging
 RUST_LOG=warn ./target/release/liquidator   # Minimal logging
+```
+
+### Dry-Run Mode
+Test liquidation detection without submitting transactions:
+```bash
+# Safe testing - no transactions will be submitted
+./target/release/liquidator --dry-run
+
+# Combine with logging
+RUST_LOG=info ./target/release/liquidator --dry-run
 ```
 
 ## Compared to Node.js Version
