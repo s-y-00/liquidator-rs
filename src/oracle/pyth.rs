@@ -1,0 +1,86 @@
+use anyhow::{anyhow, Result};
+use rust_decimal::Decimal;
+use rust_decimal::prelude::ToPrimitive;
+use solana_sdk::account::Account as SolanaAccount;
+use solana_sdk::pubkey::Pubkey;
+use std::str::FromStr;
+
+use crate::models::MarketConfigReserve;
+use crate::rpc::SolendRpcClient;
+
+const NULL_ORACLE: &str = "nu11111111111111111111111111111111111111111";
+
+/// Token oracle data
+#[derive(Debug, Clone)]
+pub struct TokenOracleData {
+    pub symbol: String,
+    pub reserve_address: String,
+    pub mint_address: String,
+    pub decimals: u32,
+    pub price: Decimal,
+}
+
+/// Fetch token price from Pyth oracle
+pub async fn get_token_oracle_data(
+    client: &SolendRpcClient,
+    reserve: &MarketConfigReserve,
+) -> Result<TokenOracleData> {
+    let price = if reserve.pyth_oracle != NULL_ORACLE {
+        // Try Pyth oracle first
+        fetch_pyth_price(client, &reserve.pyth_oracle).await?
+    } else if reserve.switchboard_oracle != NULL_ORACLE {
+        // Fallback to Switchboard
+        super::switchboard::fetch_switchboard_price(client, &reserve.switchboard_oracle).await?
+    } else {
+        return Err(anyhow!("No valid oracle for {}", reserve.liquidity_token.symbol));
+    };
+    
+    Ok(TokenOracleData {
+        symbol: reserve.liquidity_token.symbol.clone(),
+        reserve_address: reserve.address.clone(),
+        mint_address: reserve.liquidity_token.mint.clone(),
+        decimals: 10u32.pow(reserve.liquidity_token.decimals as u32),
+        price,
+    })
+}
+
+/// Fetch price from Pyth oracle
+async fn fetch_pyth_price(client: &SolendRpcClient, oracle_address: &str) -> Result<Decimal> {
+    let pubkey = Pubkey::from_str(oracle_address)?;
+    let account = client.get_account(&pubkey)?;
+    
+    // Parse Pyth price account  
+    // Pyth prices are stored as i64 with an exponent
+    // We'll use a simplified approach for now
+    
+    // Check if account data is large enough for Pyth price feed
+    if account.data.len() < 200 {
+        return Err(anyhow!("Invalid Pyth account data size"));
+    }
+    
+    // Pyth V2 price offset is at byte 208-215 (price as i64)
+    // Expo is at byte 216-219 (expo as i32)
+    // This is a simplified parsing - in production use pyth-sdk properly
+    
+    let price_bytes = &account.data[208..216];
+    let expo_bytes = &account.data[216..220];
+    
+    let price_i64 = i64::from_le_bytes(price_bytes.try_into()?);
+    let expo = i32::from_le_bytes(expo_bytes.try_into()?);
+    
+    // Convert to decimal: price * 10^expo
+    let price = Decimal::from(price_i64);
+    let exponent = Decimal::from(10i64.pow(expo.abs() as u32));
+    
+    let final_price = if expo < 0 {
+        price / exponent
+    } else {
+        price * exponent
+    };
+    
+    if final_price.is_zero() || final_price.is_sign_negative() {
+        return Err(anyhow!("Invalid price from Pyth oracle: {}", final_price));
+    }
+    
+    Ok(final_price)
+}
