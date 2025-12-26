@@ -43,6 +43,53 @@ pub fn get_wallet_token_balance(
     }
 }
 
+/// Get multiple wallet token balances in batches
+/// Returns a map of Mint Pubkey -> (Balance Base, Balance Human)
+pub async fn get_wallet_token_balances_batched(
+    client: &crate::rpc::SolendRpcClient,
+    wallet_address: &Pubkey,
+    mints: &[Pubkey],
+    decimals_map: &std::collections::HashMap<Pubkey, u8>,
+) -> Result<std::collections::HashMap<Pubkey, (u64, Decimal)>> {
+    use solana_sdk::program_pack::Pack;
+    use spl_token::state::Account as TokenAccount;
+    
+    // 1. Derive ATAs for all mints
+    let atas: Vec<Pubkey> = mints
+        .iter()
+        .map(|mint| find_associated_token_address(wallet_address, mint))
+        .collect();
+        
+    // 2. Batch fetch all ATAs
+    // Use the batched method we added to RpcClient
+    let accounts = client.get_multiple_accounts_batched(&atas, 100).await?;
+    
+    let mut results = std::collections::HashMap::new();
+    
+    // 3. Parse accounts
+    for (i, account_opt) in accounts.iter().enumerate() {
+        let mint = &mints[i];
+        let decimals = *decimals_map.get(mint).unwrap_or(&9); // Default to 9 if not found
+        
+        let (balance_base, balance_human) = if let Some(account) = account_opt {
+            if let Ok(token_account) = TokenAccount::unpack(&account.data) {
+                let amount = token_account.amount;
+                (amount, to_human(amount, decimals))
+            } else {
+                // Failed to unpack
+                (0, Decimal::ZERO)
+            }
+        } else {
+            // Account doesn't exist (balance 0)
+            (0, Decimal::ZERO)
+        };
+        
+        results.insert(*mint, (balance_base, balance_human));
+    }
+    
+    Ok(results)
+}
+
 /// Wallet balance data
 #[derive(Debug, Clone)]
 pub struct WalletTokenData {

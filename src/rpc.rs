@@ -140,6 +140,33 @@ impl SolendRpcClient {
             .get_multiple_accounts(pubkeys)
             .map_err(|e| anyhow!("Failed to get multiple accounts: {}", e))
     }
+
+    /// Get multiple accounts in batches to avoid RPC limits (max 100 per request)
+    pub async fn get_multiple_accounts_batched(
+        &self,
+        pubkeys: &[Pubkey],
+        batch_size: usize,
+    ) -> Result<Vec<Option<Account>>> {
+        let mut all_accounts = Vec::with_capacity(pubkeys.len());
+        
+        // Use default batch size of 100 if 0 or larger than limit
+        let actual_batch_size = if batch_size == 0 || batch_size > 100 { 
+            100 
+        } else { 
+            batch_size 
+        };
+
+        for chunk in pubkeys.chunks(actual_batch_size) {
+            // Note: get_multiple_accounts is synchronous in solana-client but we wrap it here
+            // In a real async client we'd await. Here we just call the sync method.
+            // If we want true parallelism we might need spawn_blocking or similar if using sync client
+            // But for now, just batching to avoid errors is the goal.
+            let chunk_accounts = self.get_multiple_accounts(chunk)?;
+            all_accounts.extend(chunk_accounts);
+        }
+
+        Ok(all_accounts)
+    }
     
     /// Get inner client reference
     pub fn client(&self) -> &RpcClient {

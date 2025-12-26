@@ -1,6 +1,7 @@
 use anyhow::Result;
 use rust_decimal::Decimal;
 use std::collections::HashMap;
+use solana_sdk::pubkey::Pubkey;
 
 use crate::models::{Obligation, Reserve};
 use crate::oracle::TokenOracleData;
@@ -34,16 +35,12 @@ pub struct RefreshedBorrow {
 
 /// Calculate refreshed obligation health
 /// Equivalent to libs/refreshObligation.ts:calculateRefreshedObligation
+/// Optimized to use Pubkey-keyed HashMap for faster lookups
 pub fn calculate_refreshed_obligation(
     obligation: &Obligation,
-    reserves: &[(String, Reserve)],
+    reserves: &HashMap<Pubkey, Reserve>,
     oracle_data: &HashMap<String, TokenOracleData>,
 ) -> Result<RefreshedObligation> {
-    // Create reserve lookup map
-    let reserve_map: HashMap<String, &Reserve> = reserves
-        .iter()
-        .map(|(addr, reserve)| (addr.clone(), reserve))
-        .collect();
     
     let mut total_borrowed_value = Decimal::ZERO;
     let mut total_allowed_borrow_value = Decimal::ZERO;
@@ -54,9 +51,9 @@ pub fn calculate_refreshed_obligation(
     
     // Process deposits
     for deposit in &obligation.deposits {
-        let reserve_addr = deposit.deposit_reserve.to_string();
+        let reserve_pubkey = deposit.deposit_reserve;
         
-        if let Some(reserve) = reserve_map.get(&reserve_addr) {
+        if let Some(reserve) = reserves.get(&reserve_pubkey) {
             // Find oracle data by matching reserve liquidity mint
             let mint_addr = reserve.liquidity.mint_pubkey.to_string();
             
@@ -81,7 +78,7 @@ pub fn calculate_refreshed_obligation(
                 total_unhealthy_borrow_value += market_value * liquidation_threshold;
                 
                 refreshed_deposits.push(RefreshedDeposit {
-                    deposit_reserve: reserve_addr.clone(),
+                    deposit_reserve: reserve_pubkey.to_string(),
                     deposited_amount,
                     market_value,
                     symbol: oracle.symbol.clone(),
@@ -93,9 +90,9 @@ pub fn calculate_refreshed_obligation(
     
     // Process borrows
     for borrow in &obligation.borrows {
-        let reserve_addr = borrow.borrow_reserve.to_string();
+        let reserve_pubkey = borrow.borrow_reserve;
         
-        if let Some(reserve) = reserve_map.get(&reserve_addr) {
+        if let Some(reserve) = reserves.get(&reserve_pubkey) {
             let mint_addr = reserve.liquidity.mint_pubkey.to_string();
             
             if let Some(oracle) = oracle_data.values().find(|o| o.mint_address == mint_addr) {
@@ -111,7 +108,7 @@ pub fn calculate_refreshed_obligation(
                 total_borrowed_value += market_value;
                 
                 refreshed_borrows.push(RefreshedBorrow {
-                    borrow_reserve: reserve_addr.clone(),
+                    borrow_reserve: reserve_pubkey.to_string(),
                     borrowed_amount_wads,
                     market_value,
                     symbol: oracle.symbol.clone(),
